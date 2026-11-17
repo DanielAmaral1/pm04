@@ -1,4 +1,8 @@
 ---
+- name: Debug temporario - tamanho das credenciais do Mongo (nao revela o valor)
+  ansible.builtin.debug:
+    msg: "len(mongo_root_user)={{ mongo_root_user | length }} len(mongo_root_password)={{ mongo_root_password | length }} len(mongo_app_user)={{ mongo_app_user | length }} len(mongo_app_password)={{ mongo_app_password | length }}"
+
 - name: Criar diretorios do stack do Mongo
   ansible.builtin.file:
     path: "{{ item }}"
