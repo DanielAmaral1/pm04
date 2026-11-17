@@ -218,7 +218,7 @@ jobs:
             "extra_packages": ${{ steps.extra_packages.outputs.json }}
           }
           JSON
-          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbook.yml \
+          ansible-playbook -vvv -i ansible/inventory/hosts.ini ansible/playbook.yml \
             --extra-vars "@/tmp/pm04_extra_vars.json" \
             | tee /tmp/pm04_ansible.log
 
