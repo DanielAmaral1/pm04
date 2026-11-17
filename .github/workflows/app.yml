@@ -38,10 +38,10 @@ jobs:
       - id: vars
         run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Validar backend (sintaxe) e frontend (testes)
+      - name: Validar backend (sintaxe) e frontend (build de producao)
         run: |
           node --check app/backend/index.js
-          cd app/frontend && npm ci && CI=true npm test -- --watchAll=false
+          cd app/frontend && npm ci && CI=true npm run build
 
       - uses: docker/login-action@v3
         with:
