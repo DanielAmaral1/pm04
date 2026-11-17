@@ -1,0 +1,43 @@
+---
+- name: Criar diretorios do stack do Mongo
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - /opt/pm04/mongo
+    - /opt/pm04/mongo/init
+
+- name: Gerar script de inicializacao (usuario da app + dados de demo)
+  ansible.builtin.template:
+    src: init-mongo.js.j2
+    dest: /opt/pm04/mongo/init/init-mongo.js
+    mode: "0640"
+  no_log: true
+
+- name: Gerar docker-compose.yml do MongoDB
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/pm04/mongo/docker-compose.yml
+    mode: "0640"
+  no_log: true
+
+- name: Subir/atualizar o container do MongoDB (idempotente)
+  community.docker.docker_compose_v2:
+    project_src: /opt/pm04/mongo
+    state: present
+    pull: missing
+  register: mongo_compose_result
+
+- name: Aguardar o MongoDB responder ao ping
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo-pm04 mongosh --quiet
+      -u {{ mongo_root_user }} -p {{ mongo_root_password }} --authenticationDatabase admin
+      --eval "db.adminCommand('ping')"
+  register: mongo_ping
+  retries: 10
+  delay: 5
+  until: mongo_ping.rc == 0
+  changed_when: false
+  no_log: true

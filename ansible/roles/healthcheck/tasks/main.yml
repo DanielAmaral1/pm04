@@ -1,0 +1,36 @@
+---
+- name: Verificar se os containers esperados estao em execucao
+  ansible.builtin.command: "docker inspect -f {{ '{{' }}.State.Running{{ '}}' }} {{ item }}"
+  register: container_running
+  changed_when: false
+  loop:
+    - pm04-api
+    - pm04-nginx
+    - pm04-caddy
+  failed_when: container_running.stdout != "true"
+
+- name: Verificar /health da API internamente (via nginx, antes do certificado TLS)
+  ansible.builtin.uri:
+    url: "http://localhost/todos"
+    status_code: [200]
+  register: nginx_health
+  retries: 10
+  delay: 5
+  until: nginx_health.status == 200
+
+- name: Verificar HTTPS publico via Caddy (Let's Encrypt pode levar alguns segundos)
+  ansible.builtin.uri:
+    url: "https://{{ app_domain }}/todos"
+    status_code: [200]
+    validate_certs: true
+  register: https_health
+  retries: 15
+  delay: 10
+  until: https_health.status == 200
+  when: wait_for_https | default(true) | bool
+
+- name: Resumo do healthcheck (visivel no job summary)
+  ansible.builtin.debug:
+    msg: >-
+      OK: containers pm04-api/pm04-nginx/pm04-caddy em execucao,
+      /todos respondendo via Nginx local{{ ' e via HTTPS publico (' + app_domain + ')' if (wait_for_https | default(true) | bool) else '' }}.

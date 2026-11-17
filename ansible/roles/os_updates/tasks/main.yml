@@ -1,0 +1,26 @@
+---
+- name: Atualizar cache de pacotes
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: update_os | bool
+
+- name: Atualizar todos os pacotes do sistema (apt upgrade)
+  ansible.builtin.apt:
+    upgrade: safe
+    autoremove: true
+  when: update_os | bool
+  register: os_upgrade_result
+
+- name: Verificar se e necessario reiniciar apos atualizacao
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_required_file
+  when: update_os | bool
+
+- name: Registrar necessidade de reboot (nao reinicia automaticamente a VM de producao)
+  ansible.builtin.debug:
+    msg: "Atencao: /var/run/reboot-required presente - reinicio manual recomendado fora da janela da feira."
+  when:
+    - update_os | bool
+    - reboot_required_file.stat.exists | default(false)

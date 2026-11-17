@@ -1,0 +1,23 @@
+---
+# A VM2 (banco) e preparada primeiro: a API da VM1 depende do Mongo
+# estar pronto para o healthcheck final passar na mesma execucao.
+- name: PM-04 - preparar e configurar a VM2 (banco de dados)
+  hosts: db
+  become: true
+  gather_facts: true
+  roles:
+    - base_packages
+    - os_updates
+    - docker
+    - mongodb
+
+- name: PM-04 - preparar e configurar a VM1 (app)
+  hosts: app
+  become: true
+  gather_facts: true
+  roles:
+    - base_packages
+    - os_updates
+    - docker
+    - app
+    - healthcheck

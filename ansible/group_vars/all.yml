@@ -1,0 +1,19 @@
+---
+# Valores fixos (nao mudam por execucao). Os parametros da pipeline
+# (docker_image, docker_tag, update_os, extra_packages, IPs, credenciais do Mongo)
+# chegam via --extra-vars na chamada do ansible-playbook (ver infra.yml).
+
+mongo_version: "7.0.14"
+mongo_cache_size_gb: "0.25"
+mongo_app_database: "todo-app"
+mongo_root_user: "root"
+mongo_app_user: "todoapp"
+# mongo_root_password / mongo_app_password chegam via --extra-vars (secrets
+# MONGO_ROOT_PASSWORD / MONGO_APP_PASSWORD), nunca ficam neste arquivo versionado.
+
+caddy_version: "2.8.4"
+
+swap_size_mb: 1536 # 1.5GB de swap nas t3.micro (1GB de RAM)
+
+extra_packages: []
+update_os: false

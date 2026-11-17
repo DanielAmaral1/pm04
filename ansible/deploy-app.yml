@@ -1,0 +1,10 @@
+---
+# Usado pelo app.yml para atualizar so a VM1 (nova tag de imagem), sem tocar
+# no provisionamento nem na VM2. O playbook completo (infra.yml) fica em playbook.yml.
+- name: PM-04 - deploy/atualizacao da aplicacao (VM1)
+  hosts: app
+  become: true
+  gather_facts: true
+  roles:
+    - app
+    - healthcheck

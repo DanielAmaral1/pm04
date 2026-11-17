@@ -1,0 +1,47 @@
+---
+- name: Instalar pacotes basicos
+  ansible.builtin.apt:
+    name: "{{ ['curl', 'git', 'unzip', 'ca-certificates', 'gnupg'] + (extra_packages | default([])) }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Verificar se o arquivo de swap ja existe
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swapfile_stat
+
+- name: Criar arquivo de swap ({{ swap_size_mb }}MB)
+  ansible.builtin.command:
+    cmd: fallocate -l {{ swap_size_mb }}M /swapfile
+  when: not swapfile_stat.stat.exists
+
+- name: Ajustar permissoes do swapfile
+  ansible.builtin.file:
+    path: /swapfile
+    mode: "0600"
+  when: not swapfile_stat.stat.exists
+
+- name: Formatar swapfile
+  ansible.builtin.command:
+    cmd: mkswap /swapfile
+  when: not swapfile_stat.stat.exists
+
+- name: Ativar swap
+  ansible.builtin.command:
+    cmd: swapon /swapfile
+  when: not swapfile_stat.stat.exists
+  changed_when: not swapfile_stat.stat.exists
+
+- name: Persistir swap no fstab
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+    state: present
+
+- name: Ajustar swappiness (preferir RAM, usar swap como reforco)
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "10"
+    state: present
+    sysctl_set: true
