@@ -9,9 +9,9 @@ on:
         options: [dev, homolog, prod]
         default: dev
       action:
-        description: "build_and_deploy = builda, publica no GHCR e implanta. deploy_only = apenas implanta uma tag existente (rollback)."
+        description: "build_and_deploy = builda, publica no GHCR e implanta. deploy_only = implanta uma tag existente (rollback). build_only = so builda/publica (bootstrap antes do primeiro infra.yml apply)."
         type: choice
-        options: [build_and_deploy, deploy_only]
+        options: [build_and_deploy, deploy_only, build_only]
         default: build_and_deploy
       docker_tag:
         description: "Tag a implantar quando action=deploy_only (rollback). Ignorado em build_and_deploy (usa o SHA curto do commit)."
@@ -28,7 +28,7 @@ env:
 
 jobs:
   build:
-    if: inputs.action == 'build_and_deploy'
+    if: inputs.action == 'build_and_deploy' || inputs.action == 'build_only'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.vars.outputs.tag }}
@@ -67,7 +67,7 @@ jobs:
 
   deploy:
     needs: build
-    if: always() && (needs.build.result == 'success' || inputs.action == 'deploy_only')
+    if: always() && inputs.action != 'build_only' && (needs.build.result == 'success' || inputs.action == 'deploy_only')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
