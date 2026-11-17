@@ -9,23 +9,22 @@
     - pm04-caddy
   failed_when: container_running.stdout != "true"
 
-- name: Verificar /health da API internamente (via nginx, antes do certificado TLS)
-  ansible.builtin.uri:
-    url: "http://localhost/todos"
-    status_code: [200]
+- name: Verificar /todos direto no container do Nginx (sem depender do Caddy/TLS)
+  ansible.builtin.command: docker exec pm04-nginx wget -q -O - http://localhost/todos
   register: nginx_health
+  changed_when: false
   retries: 10
   delay: 5
-  until: nginx_health.status == 200
+  until: nginx_health.rc == 0
 
-- name: Verificar HTTPS publico via Caddy (Let's Encrypt pode levar alguns segundos)
+- name: Verificar HTTPS publico via Caddy (emissao do certificado Let's Encrypt pode levar um tempo)
   ansible.builtin.uri:
     url: "https://{{ app_domain }}/todos"
     status_code: [200]
     validate_certs: true
   register: https_health
-  retries: 15
-  delay: 10
+  retries: 20
+  delay: 15
   until: https_health.status == 200
   when: wait_for_https | default(true) | bool
 
