@@ -1,0 +1,230 @@
+name: infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente de destino"
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      action:
+        description: "Operacao do Terraform"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      instance_name:
+        description: "Nome da VM1 (app)"
+        type: string
+        default: pm04-app
+      instance_type:
+        description: "Tipo da VM1 (app)"
+        type: string
+        default: t3.micro
+      db_instance_name:
+        description: "Nome da VM2 (banco)"
+        type: string
+        default: pm04-db
+      db_instance_type:
+        description: "Tipo da VM2 (banco)"
+        type: string
+        default: t3.micro
+      docker_image:
+        description: "Base das imagens da app no GHCR (vira <docker_image>-backend / <docker_image>-frontend)"
+        type: string
+        default: ghcr.io/danielamaral1/pm04
+      docker_tag:
+        description: "Tag das imagens a implantar (gerada pelo app.yml, ex.: SHA curto)"
+        type: string
+        required: true
+      update_os:
+        description: "Aplicar atualizacoes do SO (apt upgrade)"
+        type: boolean
+        default: false
+      extra_packages:
+        description: "Pacotes extras, separados por virgula (ex.: curl,git,unzip)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    outputs:
+      app_public_ip: ${{ steps.tf_outputs.outputs.app_public_ip }}
+      db_private_ip: ${{ steps.tf_outputs.outputs.db_private_ip }}
+      sg_app_id: ${{ steps.tf_outputs.outputs.sg_app_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      - name: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=pm04/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform plan
+        id: plan
+        run: |
+          PLAN_FLAG=""
+          if [ "${{ inputs.action }}" = "destroy" ]; then PLAN_FLAG="-destroy"; fi
+          terraform plan $PLAN_FLAG \
+            -var "environment=${{ inputs.environment }}" \
+            -var "instance_name=${{ inputs.instance_name }}" \
+            -var "instance_type=${{ inputs.instance_type }}" \
+            -var "db_instance_name=${{ inputs.db_instance_name }}" \
+            -var "db_instance_type=${{ inputs.db_instance_type }}" \
+            -var "ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+            -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Publicar plan no job summary
+        run: |
+          {
+            echo "## Terraform plan (${{ inputs.action }} / ${{ inputs.environment }})"
+            echo '```'
+            cat terraform/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform apply (plan ou destroy aplicado)
+        if: inputs.action == 'apply' || inputs.action == 'destroy'
+        run: terraform apply -auto-approve tfplan
+
+      - name: Capturar outputs do Terraform
+        id: tf_outputs
+        if: inputs.action == 'apply'
+        run: |
+          echo "app_public_ip=$(terraform output -raw app_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "sg_app_id=$(terraform output -raw sg_app_id)" >> "$GITHUB_OUTPUT"
+
+  configure:
+    needs: terraform
+    if: inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Instalar Ansible e colecoes
+        run: |
+          pip install --quiet ansible-core jinja2
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Preparar chave SSH
+        run: |
+          install -m 600 -D /dev/null /tmp/pm04_ssh_key
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/pm04_ssh_key
+
+      - name: Descobrir IP publico do runner e liberar porta 22 na VM1
+        id: runner_ip
+        run: |
+          RUNNER_IP="$(curl -s https://checkip.amazonaws.com)"
+          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "${{ needs.terraform.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${RUNNER_IP}/32"
+
+      - name: Gerar inventario a partir dos outputs do Terraform
+        run: |
+          python3 - <<PY
+          from jinja2 import Template
+          tpl = Template(open("ansible/inventory/hosts.ini.j2").read())
+          rendered = tpl.render(
+              app_public_ip="${{ needs.terraform.outputs.app_public_ip }}",
+              db_private_ip="${{ needs.terraform.outputs.db_private_ip }}",
+              ssh_key_path="/tmp/pm04_ssh_key",
+          )
+          open("ansible/inventory/hosts.ini", "w").write(rendered)
+          PY
+          cat ansible/inventory/hosts.ini
+
+      - name: Aguardar SSH da VM1 ficar disponivel
+        run: |
+          for i in $(seq 1 20); do
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+              -i /tmp/pm04_ssh_key ubuntu@${{ needs.terraform.outputs.app_public_ip }} true && break
+            echo "SSH ainda indisponivel, tentativa $i..."; sleep 10
+          done
+
+      - name: Montar lista de extra_packages (YAML)
+        id: extra_packages
+        run: |
+          python3 -c "
+          import json, os
+          raw = '${{ inputs.extra_packages }}'
+          pkgs = [p.strip() for p in raw.split(',') if p.strip()]
+          print('json=' + json.dumps(pkgs))
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Executar playbook (base_packages, os_updates, docker, mongodb, app, healthcheck)
+        env:
+          ANSIBLE_FORCE_COLOR: "1"
+        run: |
+          cat > /tmp/pm04_extra_vars.json <<JSON
+          {
+            "app_public_ip": "${{ needs.terraform.outputs.app_public_ip }}",
+            "app_domain": "$(echo ${{ needs.terraform.outputs.app_public_ip }} | tr '.' '-').sslip.io",
+            "db_private_ip": "${{ needs.terraform.outputs.db_private_ip }}",
+            "backend_image": "${{ inputs.docker_image }}-backend:${{ inputs.docker_tag }}",
+            "frontend_image": "${{ inputs.docker_image }}-frontend:${{ inputs.docker_tag }}",
+            "ghcr_actor": "${{ github.actor }}",
+            "ghcr_token": "${{ secrets.GITHUB_TOKEN }}",
+            "mongo_root_password": "${{ secrets.MONGO_ROOT_PASSWORD }}",
+            "mongo_app_password": "${{ secrets.MONGO_APP_PASSWORD }}",
+            "update_os": ${{ inputs.update_os }},
+            "extra_packages": ${{ steps.extra_packages.outputs.json }}
+          }
+          JSON
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbook.yml \
+            --extra-vars "@/tmp/pm04_extra_vars.json" \
+            | tee /tmp/pm04_ansible.log
+
+      - name: Publicar PLAY RECAP no job summary
+        if: always()
+        run: |
+          {
+            echo "## Ansible PLAY RECAP"
+            echo '```'
+            awk '/PLAY RECAP/,0' /tmp/pm04_ansible.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revogar porta 22 do runner na VM1
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ needs.terraform.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32" || true

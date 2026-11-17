@@ -1,0 +1,171 @@
+name: app
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente de destino (precisa ja ter sido criado pelo infra.yml)"
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      action:
+        description: "build_and_deploy = builda, publica no GHCR e implanta. deploy_only = apenas implanta uma tag existente (rollback)."
+        type: choice
+        options: [build_and_deploy, deploy_only]
+        default: build_and_deploy
+      docker_tag:
+        description: "Tag a implantar quando action=deploy_only (rollback). Ignorado em build_and_deploy (usa o SHA curto do commit)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  AWS_REGION: us-east-1
+  IMAGE_BASE: ghcr.io/danielamaral1/pm04
+
+jobs:
+  build:
+    if: inputs.action == 'build_and_deploy'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validar backend (sintaxe) e frontend (testes)
+        run: |
+          node --check app/backend/index.js
+          cd app/frontend && npm ci && CI=true npm test -- --watchAll=false
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build e push da imagem do backend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend
+          push: true
+          tags: ${{ env.IMAGE_BASE }}-backend:${{ steps.vars.outputs.tag }}
+
+      - name: Build e push da imagem do frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          push: true
+          tags: ${{ env.IMAGE_BASE }}-frontend:${{ steps.vars.outputs.tag }}
+
+  deploy:
+    needs: build
+    if: always() && (needs.build.result == 'success' || inputs.action == 'deploy_only')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Definir tag a implantar
+        id: tag
+        run: |
+          if [ "${{ inputs.action }}" = "deploy_only" ]; then
+            echo "tag=${{ inputs.docker_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ needs.build.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: Ler outputs do ambiente (infra ja precisa existir)
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=pm04/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+          echo "app_public_ip=$(terraform output -raw app_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "sg_app_id=$(terraform output -raw sg_app_id)" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar Ansible e colecoes
+        run: |
+          pip install --quiet ansible-core jinja2
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Preparar chave SSH
+        run: |
+          install -m 600 -D /dev/null /tmp/pm04_ssh_key
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/pm04_ssh_key
+
+      - name: Liberar porta 22 do runner na VM1
+        id: runner_ip
+        run: |
+          RUNNER_IP="$(curl -s https://checkip.amazonaws.com)"
+          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "${{ steps.tf_outputs.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${RUNNER_IP}/32"
+
+      - name: Gerar inventario
+        run: |
+          python3 - <<PY
+          from jinja2 import Template
+          tpl = Template(open("ansible/inventory/hosts.ini.j2").read())
+          rendered = tpl.render(
+              app_public_ip="${{ steps.tf_outputs.outputs.app_public_ip }}",
+              db_private_ip="${{ steps.tf_outputs.outputs.db_private_ip }}",
+              ssh_key_path="/tmp/pm04_ssh_key",
+          )
+          open("ansible/inventory/hosts.ini", "w").write(rendered)
+          PY
+
+      - name: Deploy da aplicacao (so VM1, imagem/tag nova)
+        run: |
+          cat > /tmp/pm04_extra_vars.json <<JSON
+          {
+            "app_domain": "$(echo ${{ steps.tf_outputs.outputs.app_public_ip }} | tr '.' '-').sslip.io",
+            "db_private_ip": "${{ steps.tf_outputs.outputs.db_private_ip }}",
+            "backend_image": "${{ env.IMAGE_BASE }}-backend:${{ steps.tag.outputs.tag }}",
+            "frontend_image": "${{ env.IMAGE_BASE }}-frontend:${{ steps.tag.outputs.tag }}",
+            "ghcr_actor": "${{ github.actor }}",
+            "ghcr_token": "${{ secrets.GITHUB_TOKEN }}",
+            "mongo_app_password": "${{ secrets.MONGO_APP_PASSWORD }}"
+          }
+          JSON
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy-app.yml \
+            --extra-vars "@/tmp/pm04_extra_vars.json" \
+            | tee /tmp/pm04_ansible.log
+
+      - name: Publicar PLAY RECAP e tag implantada no job summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy - tag implantada: ${{ steps.tag.outputs.tag }}"
+            echo "## Ansible PLAY RECAP"
+            echo '```'
+            awk '/PLAY RECAP/,0' /tmp/pm04_ansible.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revogar porta 22 do runner na VM1
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ steps.tf_outputs.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32" || true
