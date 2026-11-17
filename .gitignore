@@ -1,0 +1,21 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/tfplan
+terraform/plan.txt
+terraform/crash.log
+*.tfvars
+
+# Ansible
+ansible/inventory/hosts.ini
+*.retry
+
+# Node
+node_modules/
+app/frontend/build/
+npm-debug.log*
+
+# Misc
+.DS_Store
+*.log
