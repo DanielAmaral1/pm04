@@ -176,7 +176,16 @@ jobs:
           for i in $(seq 1 20); do
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
               -i /tmp/pm04_ssh_key ubuntu@${{ needs.terraform.outputs.app_public_ip }} true && break
-            echo "SSH ainda indisponivel, tentativa $i..."; sleep 10
+            echo "SSH da VM1 ainda indisponivel, tentativa $i..."; sleep 10
+          done
+
+      - name: Aguardar SSH da VM2 ficar disponivel (via ProxyJump pela VM1)
+        run: |
+          for i in $(seq 1 20); do
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+              -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${{ needs.terraform.outputs.app_public_ip }}" \
+              -i /tmp/pm04_ssh_key ubuntu@${{ needs.terraform.outputs.db_private_ip }} true && break
+            echo "SSH da VM2 (via VM1) ainda indisponivel, tentativa $i..."; sleep 10
           done
 
       - name: Montar lista de extra_packages (YAML)
@@ -193,6 +202,7 @@ jobs:
         env:
           ANSIBLE_FORCE_COLOR: "1"
         run: |
+          set -o pipefail
           cat > /tmp/pm04_extra_vars.json <<JSON
           {
             "app_public_ip": "${{ needs.terraform.outputs.app_public_ip }}",
