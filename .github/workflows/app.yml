@@ -137,11 +137,18 @@ jobs:
 
       - name: Aguardar SSH da VM1 ficar disponivel
         run: |
+          ok=0
           for i in $(seq 1 20); do
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
-              -i /tmp/pm04_ssh_key ubuntu@${{ steps.tf_outputs.outputs.app_public_ip }} true && break
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+              -i /tmp/pm04_ssh_key ubuntu@${{ steps.tf_outputs.outputs.app_public_ip }} true; then
+              ok=1; break
+            fi
             echo "SSH da VM1 ainda indisponivel, tentativa $i..."; sleep 10
           done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::SSH da VM1 nao ficou disponivel a tempo"
+            exit 1
+          fi
 
       - name: Deploy da aplicacao (so VM1, imagem/tag nova)
         run: |
