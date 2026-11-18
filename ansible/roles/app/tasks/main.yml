@@ -1,9 +1,20 @@
 ---
+# community.docker.docker_login sempre reporta changed=true quando autentica
+# (nao verifica se a credencial atual ja e valida). Para nao quebrar a
+# idempotencia do Ansible (changed=0 na reexecucao), so logamos se o
+# config.json do Docker ainda nao tiver uma entrada para o ghcr.io.
+- name: Verificar se ja existe login no GHCR
+  ansible.builtin.command: grep -q ghcr.io /root/.docker/config.json
+  register: ghcr_login_check
+  failed_when: false
+  changed_when: false
+
 - name: Login no GHCR (necessario pois os pacotes sao privados; a VM so faz pull)
   community.docker.docker_login:
     registry_url: ghcr.io
     username: "{{ ghcr_actor }}"
     password: "{{ ghcr_token }}"
+  when: ghcr_login_check.rc != 0
   no_log: true
 
 - name: Criar diretorio do stack da aplicacao
