@@ -202,14 +202,6 @@ jobs:
             exit 1
           fi
 
-      - name: Debug temporario - tamanho dos secrets do Mongo (nao revela o valor)
-        run: |
-          echo "len(MONGO_ROOT_PASSWORD)=${#MONGO_ROOT_PASSWORD}"
-          echo "len(MONGO_APP_PASSWORD)=${#MONGO_APP_PASSWORD}"
-        env:
-          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
-          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
-
       - name: Montar lista de extra_packages (YAML)
         id: extra_packages
         run: |

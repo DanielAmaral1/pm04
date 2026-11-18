@@ -10,7 +10,7 @@
   failed_when: container_running.stdout != "true"
 
 - name: Verificar /todos direto no container do Nginx (sem depender do Caddy/TLS)
-  ansible.builtin.command: docker exec pm04-nginx wget -q -O - http://localhost/todos
+  ansible.builtin.command: docker exec pm04-nginx wget -q -O - http://127.0.0.1/todos
   register: nginx_health
   changed_when: false
   retries: 10
