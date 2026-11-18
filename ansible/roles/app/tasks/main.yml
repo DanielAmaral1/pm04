@@ -4,7 +4,6 @@
     registry_url: ghcr.io
     username: "{{ ghcr_actor }}"
     password: "{{ ghcr_token }}"
-    reauthorize: true
   no_log: true
 
 - name: Criar diretorio do stack da aplicacao
