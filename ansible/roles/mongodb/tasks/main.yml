@@ -1,19 +1,9 @@
 ---
-- name: Criar diretorios do stack do Mongo
+- name: Criar diretorio do stack do Mongo
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: /opt/pm04/mongo
     state: directory
     mode: "0750"
-  loop:
-    - /opt/pm04/mongo
-    - /opt/pm04/mongo/init
-
-- name: Gerar script de inicializacao (usuario da app + dados de demo)
-  ansible.builtin.template:
-    src: init-mongo.js.j2
-    dest: /opt/pm04/mongo/init/init-mongo.js
-    mode: "0640"
-  no_log: true
 
 - name: Gerar docker-compose.yml do MongoDB
   ansible.builtin.template:
@@ -29,7 +19,7 @@
     pull: missing
   register: mongo_compose_result
 
-- name: Aguardar o MongoDB responder ao ping
+- name: Aguardar o MongoDB responder ao ping (autenticado como root)
   ansible.builtin.command:
     cmd: >-
       docker exec mongo-pm04 mongosh --quiet
@@ -40,4 +30,51 @@
   delay: 5
   until: mongo_ping.rc == 0
   changed_when: false
+  no_log: true
+
+# O usuario da app e os dados de demo sao criados aqui via comandos idempotentes
+# (em vez do mecanismo automatico /docker-entrypoint-initdb.d do Mongo), para nao
+# depender da janela de boot do container e para continuar funcionando de forma
+# previsivel em reexecucoes (scenario 3 do PM-04: segunda execucao = changed=0).
+
+- name: Verificar se o usuario da aplicacao ja existe no Mongo
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo-pm04 mongosh --quiet
+      -u {{ mongo_root_user }} -p {{ mongo_root_password }} --authenticationDatabase admin
+      {{ mongo_app_database }}
+      --eval "JSON.stringify(db.getUser('{{ mongo_app_user }}'))"
+  register: mongo_app_user_check
+  changed_when: false
+  no_log: true
+
+- name: Criar usuario da aplicacao no Mongo (readWrite no banco da app)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo-pm04 mongosh --quiet
+      -u {{ mongo_root_user }} -p {{ mongo_root_password }} --authenticationDatabase admin
+      {{ mongo_app_database }}
+      --eval "db.createUser({user: '{{ mongo_app_user }}', pwd: '{{ mongo_app_password }}', roles: [{role: 'readWrite', db: '{{ mongo_app_database }}'}]})"
+  when: mongo_app_user_check.stdout | trim == 'null'
+  no_log: true
+
+- name: Contar documentos na colecao todos
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo-pm04 mongosh --quiet
+      -u {{ mongo_root_user }} -p {{ mongo_root_password }} --authenticationDatabase admin
+      {{ mongo_app_database }}
+      --eval "db.todos.countDocuments({})"
+  register: mongo_todos_count
+  changed_when: false
+  no_log: true
+
+- name: Inserir dados de demonstracao (somente se a colecao estiver vazia)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec mongo-pm04 mongosh --quiet
+      -u {{ mongo_root_user }} -p {{ mongo_root_password }} --authenticationDatabase admin
+      {{ mongo_app_database }}
+      --eval "db.todos.insertMany([{text: 'Bem-vindo ao ToDo App da Feira de Profissoes', completed: false}, {text: 'Dados de demonstracao - reinicie a lista antes de cada apresentacao', completed: false}, {text: 'Estudar Cloud', completed: true}])"
+  when: (mongo_todos_count.stdout | trim | int) == 0
   no_log: true
