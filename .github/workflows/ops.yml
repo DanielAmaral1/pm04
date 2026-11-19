@@ -1,0 +1,271 @@
+name: ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente de destino (precisa ja existir, criado pelo infra.yml)"
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      operation:
+        description: "Operacao a executar"
+        type: choice
+        options: [health, restart, logs, backup, restore, reset_demo]
+        default: health
+      restore_backup_key:
+        description: "restore: chave do backup no S3 a restaurar (vazio = o mais recente)"
+        type: string
+        default: ""
+      confirm_reset:
+        description: "reset_demo: digite RESET para confirmar (apaga e reseeda a lista de demonstracao)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.17.0"
+
+      - name: Ler outputs do ambiente (infra ja precisa existir)
+        id: tf
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=pm04/${{ inputs.environment }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+          echo "app_public_ip=$(terraform output -raw app_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "sg_app_id=$(terraform output -raw sg_app_id)" >> "$GITHUB_OUTPUT"
+          echo "backups_bucket=$(terraform output -raw backups_bucket)" >> "$GITHUB_OUTPUT"
+
+      - name: Preparar chave SSH
+        run: |
+          install -m 600 -D /dev/null /tmp/pm04_ssh_key
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/pm04_ssh_key
+
+      - name: Liberar porta 22 do runner na VM1
+        id: runner_ip
+        run: |
+          RUNNER_IP="$(curl -s https://checkip.amazonaws.com)"
+          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "${{ steps.tf.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${RUNNER_IP}/32"
+
+      - name: Aguardar SSH da VM1 ficar disponivel
+        run: |
+          ok=0
+          for i in $(seq 1 20); do
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+              -i /tmp/pm04_ssh_key ubuntu@${{ steps.tf.outputs.app_public_ip }} true; then
+              ok=1; break
+            fi
+            echo "SSH da VM1 ainda indisponivel, tentativa $i..."; sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::SSH da VM1 nao ficou disponivel a tempo"
+            exit 1
+          fi
+
+      - name: "[health] Verificar containers e endpoint publico"
+        if: inputs.operation == 'health'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+        run: |
+          set -o pipefail
+          SSH1=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/pm04_ssh_key "ubuntu@${APP_IP}")
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          {
+            echo "## health - ${{ inputs.environment }}"
+            echo "### Containers VM1 (app)"
+            echo '```'
+            "${SSH1[@]}" "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+            echo '```'
+            echo "### Containers VM2 (banco)"
+            echo '```'
+            "${SSH2[@]}" "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+            echo '```'
+            echo "### Endpoint publico"
+            DOMAIN="$(echo "$APP_IP" | tr '.' '-').sslip.io"
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMAIN/todos")
+            echo "- https://$DOMAIN/todos -> HTTP $CODE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[restart] Reiniciar containers nas duas VMs"
+        if: inputs.operation == 'restart'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+        run: |
+          set -o pipefail
+          SSH1=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/pm04_ssh_key "ubuntu@${APP_IP}")
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          {
+            echo "## restart - ${{ inputs.environment }}"
+            echo "### VM1 (app)"
+            echo '```'
+            "${SSH1[@]}" "cd /opt/pm04/app && docker compose restart"
+            echo '```'
+            echo "### VM2 (banco)"
+            echo '```'
+            "${SSH2[@]}" "cd /opt/pm04/mongo && docker compose restart"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[logs] Coletar logs recentes dos containers"
+        if: inputs.operation == 'logs'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+        run: |
+          set -o pipefail
+          SSH1=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /tmp/pm04_ssh_key "ubuntu@${APP_IP}")
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          {
+            echo "## logs - ${{ inputs.environment }}"
+            for c in pm04-api pm04-nginx pm04-caddy; do
+              echo "### VM1 - $c (ultimas 100 linhas)"
+              echo '```'
+              "${SSH1[@]}" "docker logs --tail 100 $c" 2>&1
+              echo '```'
+            done
+            echo "### VM2 - mongo-pm04 (ultimas 100 linhas)"
+            echo '```'
+            "${SSH2[@]}" "docker logs --tail 100 mongo-pm04" 2>&1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[backup] mongodump -> S3"
+        if: inputs.operation == 'backup'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+        run: |
+          set -o pipefail
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          KEY="${{ inputs.environment }}/pm04-backup-${TS}.gz"
+          "${SSH2[@]}" "docker exec mongo-pm04 mongodump -u root -p '$MONGO_ROOT_PASSWORD' --authenticationDatabase admin --db todo-app --archive --gzip" \
+            > /tmp/pm04-backup.gz
+          aws s3 cp /tmp/pm04-backup.gz "s3://${{ steps.tf.outputs.backups_bucket }}/${KEY}"
+          rm -f /tmp/pm04-backup.gz
+          {
+            echo "## backup - ${{ inputs.environment }}"
+            echo "- Enviado para: s3://${{ steps.tf.outputs.backups_bucket }}/${KEY}"
+            echo "- Retencao: 14 dias (lifecycle do bucket)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[restore] Restaurar em container isolado (sem tocar no banco principal)"
+        if: inputs.operation == 'restore'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+        run: |
+          set -o pipefail
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          SCP2=(scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key)
+
+          if [ -n "${{ inputs.restore_backup_key }}" ]; then
+            KEY="${{ inputs.restore_backup_key }}"
+          else
+            KEY="$(aws s3api list-objects-v2 --bucket "${{ steps.tf.outputs.backups_bucket }}" --prefix "${{ inputs.environment }}/" --query 'sort_by(Contents,&LastModified)[-1].Key' --output text)"
+          fi
+          if [ -z "$KEY" ] || [ "$KEY" = "None" ]; then
+            echo "::error::Nenhum backup encontrado em s3://${{ steps.tf.outputs.backups_bucket }}/${{ inputs.environment }}/"
+            exit 1
+          fi
+          aws s3 cp "s3://${{ steps.tf.outputs.backups_bucket }}/${KEY}" /tmp/pm04-restore.gz
+
+          MONGO_IMAGE="$("${SSH2[@]}" "docker inspect mongo-pm04 --format '{{.Config.Image}}'")"
+
+          "${SCP2[@]}" /tmp/pm04-restore.gz "ubuntu@${DB_IP}:/tmp/pm04-restore.gz"
+
+          "${SSH2[@]}" "
+            set -e
+            docker rm -f mongo-pm04-restore-test >/dev/null 2>&1 || true
+            docker volume rm pm04_mongo_restore_test_data >/dev/null 2>&1 || true
+            docker run -d --name mongo-pm04-restore-test -v pm04_mongo_restore_test_data:/data/db '$MONGO_IMAGE'
+            sleep 8
+            docker cp /tmp/pm04-restore.gz mongo-pm04-restore-test:/tmp/restore.gz
+            docker exec mongo-pm04-restore-test mongorestore --archive=/tmp/restore.gz --gzip
+            echo RESTORE_COUNT=\$(docker exec mongo-pm04-restore-test mongosh --quiet todo-app --eval 'db.todos.countDocuments({})')
+            docker rm -f mongo-pm04-restore-test
+            docker volume rm pm04_mongo_restore_test_data
+            rm -f /tmp/pm04-restore.gz
+          " | tee /tmp/pm04-restore-output.txt
+
+          rm -f /tmp/pm04-restore.gz
+          RESTORE_COUNT="$(grep -o 'RESTORE_COUNT=.*' /tmp/pm04-restore-output.txt | cut -d= -f2)"
+
+          {
+            echo "## restore - ${{ inputs.environment }}"
+            echo "- Backup restaurado: s3://${{ steps.tf.outputs.backups_bucket }}/${KEY}"
+            echo "- Restaurado em container isolado (mongo-pm04-restore-test, volume proprio), destruido ao final"
+            echo "- Documentos restaurados em todo-app.todos: ${RESTORE_COUNT}"
+            echo "- O banco principal (mongo-pm04) nao foi tocado"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "[reset_demo] Confirmar operacao"
+        if: inputs.operation == 'reset_demo'
+        run: |
+          if [ "${{ inputs.confirm_reset }}" != "RESET" ]; then
+            echo "::error::Operacao cancelada: para resetar a lista de demonstracao, preencha confirm_reset com o texto RESET"
+            exit 1
+          fi
+
+      - name: "[reset_demo] Apagar e reseedar a lista de demonstracao"
+        if: inputs.operation == 'reset_demo'
+        env:
+          APP_IP: ${{ steps.tf.outputs.app_public_ip }}
+          DB_IP: ${{ steps.tf.outputs.db_private_ip }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+        run: |
+          set -o pipefail
+          SSH2=(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ProxyCommand="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p -i /tmp/pm04_ssh_key ubuntu@${APP_IP}" \
+            -i /tmp/pm04_ssh_key "ubuntu@${DB_IP}")
+          "${SSH2[@]}" "docker exec mongo-pm04 mongosh --quiet -u root -p '$MONGO_ROOT_PASSWORD' --authenticationDatabase admin todo-app --eval \"db.todos.deleteMany({}); db.todos.insertMany([{text: 'Bem-vindo ao ToDo App da Feira de Profissoes', completed: false}, {text: 'Dados de demonstracao - reinicie a lista antes de cada apresentacao', completed: false}, {text: 'Estudar Cloud', completed: true}])\""
+          {
+            echo "## reset_demo - ${{ inputs.environment }}"
+            echo "- Lista de tarefas apagada e reseedada com os dados de demonstracao padrao"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Revogar porta 22 do runner na VM1
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ steps.tf.outputs.sg_app_id }}" \
+            --protocol tcp --port 22 --cidr "${{ steps.runner_ip.outputs.ip }}/32" || true

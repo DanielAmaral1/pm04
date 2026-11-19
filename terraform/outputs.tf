@@ -28,3 +28,7 @@ output "sg_app_id" {
 output "sg_db_id" {
   value = aws_security_group.db.id
 }
+
+output "backups_bucket" {
+  value = aws_s3_bucket.backups.bucket
+}
