@@ -68,6 +68,65 @@ manualmente fora da pipeline:
 3. `ops.yml` para as rotinas operacionais (ver tabela acima).
 4. `infra.yml` com `action=destroy` para encerrar o ambiente.
 
+## Como reproduzir do zero
+
+Para rodar este projeto numa conta AWS / repositório GitHub diferentes dos
+originais:
+
+### 1. Bucket do state do Terraform
+
+Criar um bucket S3 (nome globalmente único, ex. `<algo>-tfstate-<ano>`) na
+região escolhida, **com versionamento habilitado** — é o backend do
+`terraform/backend.tf` (`use_lockfile = true`, sem precisar de DynamoDB).
+
+### 2. Usuário/credenciais IAM
+
+O usuário cujas chaves vão nos secrets `AWS_ACCESS_KEY_ID`/
+`AWS_SECRET_ACCESS_KEY` precisa de, no mínimo:
+
+- `AmazonEC2FullAccess` (ou algo equivalente: VPC, subnet, SG, instância,
+  EIP, key pair) — para o Terraform provisionar a rede e as VMs.
+- Uma policy de S3 escopada aos buckets do projeto, por exemplo:
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Sid": "ManageProjectBuckets",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": ["arn:aws:s3:::<prefixo>-*", "arn:aws:s3:::<prefixo>-*/*"]
+    }]
+  }
+  ```
+
+  (cobre o bucket de state e o de backups, criados pelo próprio
+  `terraform/backups.tf`).
+
+Evite usar as credenciais de `root` da conta na pipeline — este projeto
+só usa `root` para o setup inicial (criar o usuário IAM e aplicar essas
+duas policies).
+
+### 3. Secrets do repositório (Settings → Secrets and variables → Actions)
+
+| Secret | Conteúdo |
+| --- | --- |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Credenciais do usuário IAM acima. |
+| `TF_STATE_BUCKET` | Nome do bucket criado no passo 1. |
+| `SSH_PUBLIC_KEY` / `SSH_PRIVATE_KEY` | Um par de chaves **novo**, gerado só para este projeto (`ssh-keygen -t ed25519`) — **os dois secrets precisam ser o par certo**; se não forem, toda VM criada com a chave errada precisa ser recriada (`terraform apply -replace=...`), não só os secrets atualizados. |
+| `MONGO_ROOT_PASSWORD` / `MONGO_APP_PASSWORD` | Gerar localmente (ex. `openssl rand -base64 24`) e cadastrar sem nunca imprimir o valor: `openssl rand -base64 24 \| gh secret set MONGO_ROOT_PASSWORD`. |
+
+`GITHUB_TOKEN` (push/pull no GHCR) é automático, não precisa cadastrar.
+
+### 4. Primeira execução
+
+Como o GHCR ainda não tem nenhuma imagem publicada, a primeira vez precisa
+ser nessa ordem (depois disso, a ordem normal da seção "Rodando" acima
+vale):
+
+1. `app.yml` com `action=build_only` — publica as duas imagens iniciais.
+2. `infra.yml` com `action=apply` e o `docker_tag` que o passo 1 gerou.
+
 ## Problemas encontrados e soluções
 
 Bugs reais descobertos ao rodar a pipeline de ponta a ponta contra a AWS
