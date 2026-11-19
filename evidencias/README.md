@@ -89,8 +89,21 @@ Execuções de validação de cada operação, todas no ambiente `dev`:
 
 ## Após a reescrita do histórico
 
-_(preencher depois de `git push --force-with-lease` e da nova execução do
-`app.yml`: novo SHA curto / tag de imagem usada, e se algum link de run acima
-precisar ser atualizado — os runs já concluídos continuam acessíveis pelos
-mesmos links mesmo após o rewrite, só a tag de imagem padrão do `docker_tag`
-muda.)_
+O histórico do `main` foi reescrito (`git filter-branch --msg-filter`) para
+remover as linhas de atribuição do Claude Code das mensagens de commit,
+verificado com `git log --grep="Co-Authored-By"` (vazio) e enviado com
+`git push --force-with-lease`. Os SHAs de todos os commits mudaram.
+
+- **Novo SHA curto do commit final:** `2be241d`
+- **Imagens republicadas com essa tag** via
+  [run 44439857180](https://github.com/DanielAmaral1/pm04/actions/runs/44439857180)
+  (`app.yml`, `action=build_and_deploy`) —
+  `ghcr.io/danielamaral1/pm04-backend:2be241d` e
+  `ghcr.io/danielamaral1/pm04-frontend:2be241d`, já implantadas na VM1.
+- Os links de run dos cenários 1–3 e das operações acima continuam válidos:
+  o rewrite de histórico não afeta runs do GitHub Actions já concluídos. Só
+  a tag **padrão** a usar num novo `infra.yml`/`app.yml` a partir de agora é
+  `2be241d` (antes era `133cd3a`).
+- Confirmado que a aplicação continua no ar e os dados não foram afetados
+  pelo redeploy: `https://3-223-65-159.sslip.io/todos` responde 200 com os
+  mesmos 3 itens de demonstração de antes do redeploy.
