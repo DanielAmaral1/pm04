@@ -128,11 +128,11 @@ jobs:
             echo "## restart - ${{ inputs.environment }}"
             echo "### VM1 (app)"
             echo '```'
-            "${SSH1[@]}" "cd /opt/pm04/app && docker compose restart"
+            "${SSH1[@]}" "sudo docker compose -f /opt/pm04/app/docker-compose.yml restart"
             echo '```'
             echo "### VM2 (banco)"
             echo '```'
-            "${SSH2[@]}" "cd /opt/pm04/mongo && docker compose restart"
+            "${SSH2[@]}" "sudo docker compose -f /opt/pm04/mongo/docker-compose.yml restart"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
