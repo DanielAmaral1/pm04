@@ -163,13 +163,13 @@ container preservando dados) e ACE-06 (rollback de versão), em
 | **ACE-01 · Reprodução** | Ambiente criado do zero só com código + pipelines (cenário 1 acima); pré-requisitos e parâmetros documentados no README. |
 | **ACE-02 · Duas VMs** | `aws_instance.app` e `aws_instance.db` distintas; MongoDB só na VM2 (`terraform/ec2.tf`). |
 | **ACE-03 · Isolamento** | Porta 27017 da VM2 bloqueada externamente; API conecta pelo IP privado (ver cenário 1). |
-| **ACE-04 · Aplicação pública** | **Evidência via linha de comando** (não houve print de celular disponível até o prazo de entrega): ciclo completo de CRUD executado agora, de fora da infraestrutura, contra a URL pública — cadastro, conclusão, reabertura, exclusão e confirmação do estado a cada passo (reprodução literal abaixo). Certificado HTTPS confirmado via `openssl s_client`. |
+| **ACE-04 · Aplicação pública** | **Demonstrado.** Acesso pelo celular (rede 5G, fora da infraestrutura) comprovado nos prints da seção "Evidências visuais" — URL pública aberta no Safari e a aplicação funcionando. Complementado por um ciclo completo de CRUD via `curl` (cadastro, conclusão, reabertura, exclusão e confirmação do estado a cada passo — reprodução literal abaixo) e pelo certificado HTTPS confirmado via `openssl s_client`. |
 | **ACE-05 · Persistência** | Container do Mongo removido manualmente e recriado via `infra.yml` — os mesmos `_id` de documento continuaram presentes. `restart` (ops.yml) e atualização da aplicação (`app.yml`) testados sem perda de dados. |
 | **ACE-06 · Automação** | `infra.yml`/`app.yml` com tag identificada (SHA curto); rollback testado de verdade: deploy de uma tag anterior funcionando, depois redeploy da tag atual. |
 | **ACE-07 · Recuperação** | Backup real em S3 + restauração conferida em container isolado (ver tabela de operações). |
 | **ACE-08 · Operação** | `health`/`logs`/`restart` funcionais; credenciais nunca em código ou logs (`no_log: true`). |
 | **ACE-09 · Custos** | Seção 6 desta entrega / `docs/custos.md`. |
-| **ACE-10 · Transferência** | **Pendente de execução pelos alunos** com `docs/manual-alunos.md` — não foi possível registrar essa evidência até o prazo de entrega deste documento. |
+| **ACE-10 · Transferência** | **Demonstrado.** A rotina `health` foi executada pela equipe (Luiz) seguindo só o `docs/manual-alunos.md`, sem apoio de quem escreveu a pipeline — prints na seção "Evidências visuais", run [46079062557](https://github.com/DanielAmaral1/pm04/actions/runs/46079062557). A demonstração completa do fluxo (iniciar, verificar, atualizar, logs, recuperar, preparar a demo, encerrar) pelos dois integrantes ocorre na apresentação do projeto. |
 
 ### Evidência de CRUD (ACE-04) — registrada no momento desta entrega
 
@@ -200,6 +200,19 @@ Certificado HTTPS: subject=CN=3-223-65-159.sslip.io
                     validade: 17 Nov 2026 - 15 Fev 2027
 ```
 
+### Evidências visuais
+
+**ACE-04 — acesso pelo celular (rede 5G), fora da infraestrutura:**
+
+![URL pública digitada no Safari do celular, rede 5G](../evidencias/prints/ace04-0-url.png.png)
+
+![Aplicação ToDo App funcionando no Safari do celular](../evidencias/prints/ace04-2-app.png.png)
+
+**ACE-10 — rotina `health` executada pela equipe seguindo o manual:**
+
+![Execução do ops.yml (health) pelo GitHub Actions, run bem-sucedido](../evidencias/prints/ace10-health-1.png.png)
+
+![Job summary da operação health: containers das duas VMs e endpoint público HTTP 200](../evidencias/prints/ace10-health-2.png.png)
 
 ## 6. Custos
 
