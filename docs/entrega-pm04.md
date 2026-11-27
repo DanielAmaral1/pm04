@@ -6,7 +6,6 @@
 **Integrantes:** Daniel Spies Amaral · Luiz Guilherme Moura Pias
 **Data de entrega:** 27/11/2026
 
----
 
 ## Link do repositório
 
@@ -14,7 +13,6 @@ https://github.com/DanielAmaral1/pm04 (público)
 
 **URL pública da aplicação entregue:** https://3-223-65-159.sslip.io
 
----
 
 ## 1. Análise da demanda
 
@@ -26,23 +24,16 @@ aplicação, e toda a infraestrutura/operação automatizada por pipelines.
 | Requisito do escopo | Recurso entregue |
 | --- | --- |
 | **REQ-01 · Servidores** — no mínimo duas VMs, uma dedicada ao MongoDB; justificar recursos adicionais | `terraform/ec2.tf`: `aws_instance.app` (VM1) e `aws_instance.db` (VM2), MongoDB exclusivo na VM2. Recursos adicionais: bucket S3 de state (`terraform/backend.tf`) e bucket S3 de backups com lifecycle de 14 dias (`terraform/backups.tf`) — ambos necessários para o backend do Terraform e para o REQ-04 de persistência/recuperação. |
-| **REQ-02 · Rede privada** — MongoDB acessível só pela API, nunca publicado na internet | `terraform/security_groups.tf`: `sg_db` libera a porta 27017 **somente** a partir do `sg_app` (referência de security group, não CIDR/IP). Nenhuma regra de entrada pública na VM2. Testado tentando conectar na porta 27017 pelo IP público da VM2 de fora da rede — bloqueado (ver seção 6, ACE-03). |
+| **REQ-02 · Rede privada** — MongoDB acessível só pela API, nunca publicado na internet | `terraform/security_groups.tf`: `sg_db` libera a porta 27017 **somente** a partir do `sg_app` (referência de security group, não CIDR/IP). Nenhuma regra de entrada pública na VM2. Testado tentando conectar na porta 27017 pelo IP público da VM2 de fora da rede — bloqueado (ver seção 5, ACE-03). |
 | **REQ-03 · Acessos** — administração restrita, credencial própria da aplicação no banco, segredos fora do código/logs | SSH da VM1 liberado só durante a execução da pipeline (via AWS CLI, fora do state do Terraform, revogado com `if: always()`); VM2 só acessível via `ProxyJump` pela VM1, nunca diretamente. MongoDB usa um usuário próprio da aplicação (`todoapp`, `readWrite` só no banco `todo-app`), separado do `root` administrativo. Todas as credenciais (AWS, SSH, Mongo) ficam só em GitHub Secrets; tasks do Ansible que as manipulam usam `no_log: true`. |
-| **REQ-04 · Persistência** — armazenamento persistente, backup e restauração testada, atualizações não podem apagar tarefas | Volume Docker nomeado `pm04_mongo_data` (não efêmero). Testado removendo o container do Mongo e recriando via `infra.yml` — os mesmos documentos continuaram no lugar (seção 6, ACE-05). `ops.yml` com operação `backup` (`mongodump` → S3) e `restore` (restauração conferida em container isolado, sem tocar no banco principal). |
+| **REQ-04 · Persistência** — armazenamento persistente, backup e restauração testada, atualizações não podem apagar tarefas | Volume Docker nomeado `pm04_mongo_data` (não efêmero). Testado removendo o container do Mongo e recriando via `infra.yml` — os mesmos documentos continuaram no lugar (seção 5, ACE-05). `ops.yml` com operação `backup` (`mongodump` → S3) e `restore` (restauração conferida em container isolado, sem tocar no banco principal). |
 | **REQ-05 · Publicação** — URL HTTPS utilizável em outro dispositivo, frontend e API no mesmo endereço público | Caddy obtém certificado HTTPS automático (Let's Encrypt) para o domínio `<ip-com-hifens>.sslip.io`; Nginx serve o build do React e repassa `/todos` e `/todos/:id` para a API, preservando métodos — frontend e API no mesmo domínio público. |
 | **REQ-06 · Disponibilidade** — reinício de serviços, verificações de saúde (incluindo conexão da API ao banco), diagnóstico documentado | Todos os containers com `restart: unless-stopped` e `HEALTHCHECK` próprio; a rota `GET /health` da API verifica a conexão com o Mongo. `ops.yml` com operações `health`, `logs` e `restart`. Falhas comuns e diagnóstico documentados em `docs/manual-alunos.md`. |
 
----
 
 ## 2. Decisões de arquitetura
 
-```
-Visitantes --HTTPS--> VM1 (app): Caddy -> Nginx (React) -> API (Express)
-                                                                |
-                                                   rede privada | :27017
-                                                                v
-                                                 VM2 (banco): MongoDB
-```
+![Arquitetura — PM-04 ToDo App](arquitetura.png)
 
 | Decisão | Justificativa |
 | --- | --- |
@@ -56,10 +47,9 @@ Visitantes --HTTPS--> VM1 (app): Caddy -> Nginx (React) -> API (Express)
 | Usuário da app separado do root no Mongo | Mitiga o impacto de uma eventual falha/vazamento na API — a credencial exposta nunca tem privilégio administrativo sobre o banco. |
 | Retenção de backup curta (14 dias) | O uso é pontual (preparação + feira); reter backups por mais tempo só aumentaria custo de armazenamento sem necessidade real. |
 
-Mais detalhes de dimensionamento e custo em [`custos.md`](custos.md) (anexo
-na seção 7).
+Mais detalhes de dimensionamento e custo em [`custos.md`](custos.md) (ver
+resumo na seção 6 desta entrega).
 
----
 
 ## 3. Pipelines e parâmetros
 
@@ -88,7 +78,6 @@ Todos os cinco parâmetros recomendados pelo PM-04
 próprias da VM2 (`db_instance_name`/`db_instance_type`), exigidas pelo
 desenho de duas VMs deste projeto.
 
----
 
 ## 4. Testes dos cenários obrigatórios
 
@@ -148,7 +137,7 @@ nas duas VMs (`changed=0`).
 
 > Uma primeira tentativa de reexecução ([run 44423436082](https://github.com/DanielAmaral1/pm04/actions/runs/44423436082))
 > mostrou `changed=1` na VM1 por um bug real do módulo
-> `community.docker.docker_login` — ver seção 8, item 11.
+> `community.docker.docker_login` — ver seção 7, item 11.
 
 ### Operações (`ops.yml`)
 
@@ -166,7 +155,6 @@ Lista completa de runs, incluindo os testes extras de ACE-05 (recriação de
 container preservando dados) e ACE-06 (rollback de versão), em
 [`evidencias/README.md`](../evidencias/README.md).
 
----
 
 ## 5. Validação da demanda — ACE-01 a ACE-10
 
@@ -180,7 +168,7 @@ container preservando dados) e ACE-06 (rollback de versão), em
 | **ACE-06 · Automação** | `infra.yml`/`app.yml` com tag identificada (SHA curto); rollback testado de verdade: deploy de uma tag anterior funcionando, depois redeploy da tag atual. |
 | **ACE-07 · Recuperação** | Backup real em S3 + restauração conferida em container isolado (ver tabela de operações). |
 | **ACE-08 · Operação** | `health`/`logs`/`restart` funcionais; credenciais nunca em código ou logs (`no_log: true`). |
-| **ACE-09 · Custos** | Seção 7 desta entrega / `docs/custos.md`. |
+| **ACE-09 · Custos** | Seção 6 desta entrega / `docs/custos.md`. |
 | **ACE-10 · Transferência** | **Pendente de execução pelos alunos** com `docs/manual-alunos.md` — não foi possível registrar essa evidência até o prazo de entrega deste documento. |
 
 ### Evidência de CRUD (ACE-04) — registrada no momento desta entrega
@@ -212,7 +200,6 @@ Certificado HTTPS: subject=CN=3-223-65-159.sslip.io
                     validade: 17 Nov 2026 - 15 Fev 2027
 ```
 
----
 
 ## 6. Custos
 
@@ -229,7 +216,6 @@ Maior item de custo recorrente: os dois endereços IPv4 públicos
 (cobrados US$ 0,005/hora **cada** desde fev/2024, incluindo o Elastic IP),
 não as instâncias EC2 em si.
 
----
 
 ## 7. Problemas encontrados e soluções
 
@@ -270,7 +256,6 @@ Bugs reais descobertos rodando a pipeline de ponta a ponta contra a AWS
     `0750` (root) falhava para o usuário `ubuntu`; corrigido com
     `sudo docker compose -f <caminho>`.
 
----
 
 ## Anexo
 
