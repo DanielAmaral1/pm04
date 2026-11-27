@@ -2,7 +2,7 @@
 
 ## Automação de infraestrutura com Terraform, Ansible e CI/CD
 
-**Disciplina:** DevOps e Infraestrutura
+**Disciplina:** Infraestrutura por Meio de Código (IaC) e Engenharia de Confiabilidade de Sites (SRE)
 **Integrantes:** Daniel Spies Amaral · Luiz Guilherme Moura Pias
 **Data de entrega:** 27/11/2026
 
@@ -169,7 +169,7 @@ container preservando dados) e ACE-06 (rollback de versão), em
 | **ACE-07 · Recuperação** | Backup real em S3 + restauração conferida em container isolado (ver tabela de operações). |
 | **ACE-08 · Operação** | `health`/`logs`/`restart` funcionais; credenciais nunca em código ou logs (`no_log: true`). |
 | **ACE-09 · Custos** | Seção 6 desta entrega / `docs/custos.md`. |
-| **ACE-10 · Transferência** | **Demonstrado.** A rotina `health` foi executada pela equipe (Luiz) seguindo só o `docs/manual-alunos.md`, sem apoio de quem escreveu a pipeline — prints na seção "Evidências visuais", run [46079062557](https://github.com/DanielAmaral1/pm04/actions/runs/46079062557). A demonstração completa do fluxo (iniciar, verificar, atualizar, logs, recuperar, preparar a demo, encerrar) pelos dois integrantes ocorre na apresentação do projeto. |
+| **ACE-10 · Transferência** | **Parcial.** A rotina `health` foi executada seguindo o `docs/manual-alunos.md` (run [46079062557](https://github.com/DanielAmaral1/pm04/actions/runs/46079062557), prints na seção "Evidências visuais"). A execução das rotinas pelos dois integrantes será demonstrada na apresentação. |
 
 ### Evidência de CRUD (ACE-04) — registrada no momento desta entrega
 
@@ -202,13 +202,12 @@ Certificado HTTPS: subject=CN=3-223-65-159.sslip.io
 
 ### Evidências visuais
 
-**ACE-04 — acesso pelo celular (rede 5G), fora da infraestrutura:**
+#### ACE-04 — acesso pelo celular (rede 5G), fora da infraestrutura
 
 ![URL pública digitada no Safari do celular, rede 5G](../evidencias/prints/ace04-0-url.png.png)
-
 ![Aplicação ToDo App funcionando no Safari do celular](../evidencias/prints/ace04-2-app.png.png)
 
-**ACE-10 — rotina `health` executada pela equipe seguindo o manual:**
+#### ACE-10 — rotina `health` executada seguindo o manual
 
 ![Execução do ops.yml (health) pelo GitHub Actions, run bem-sucedido](../evidencias/prints/ace10-health-1.png.png)
 
